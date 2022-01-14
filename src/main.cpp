@@ -40,14 +40,12 @@ String labels[] = {"125", "250", "500", "1K", "2K", "4K", "8K", "16K"};
 arduinoFFT FFT = arduinoFFT(); /* Create FFT object */
 
 float k1 = 4;
-float k2 = 1;
-float k3 = 0;
 int bands[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
-void getData();
+void fastL(void *params);
 double fnt(int a, float p)
 {
-  auto z = pow(a >> 24, p);
+  auto z = pow(a >> 25, p);
   if (z < 255)
   {
     return z;
@@ -64,7 +62,7 @@ void setupMic()
 
   const i2s_config_t i2s_config = {
       .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_RX), // Receive, not transfer
-      .sample_rate = 48000,                              // 10240 * 2 (20480) Hz
+      .sample_rate = 44100,                              // 10240 * 2 (20480) Hz
       .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,      // could only get it to work with 32bits
       .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,       // LEFT when pin is tied to ground.
       .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
@@ -97,26 +95,22 @@ void setupMic()
   }
   Serial.println("I2S driver installed.");
 }
-
+xSemaphoreHandle ledSem;
 void setup()
 {
-  // put your setup code here, to run once:
-  FastLED.addLeds<WS2812B, DATA_PIN, RGB>(leds, NUM_LEDS);
+  ledSem = xSemaphoreCreateBinary();
+  xTaskCreatePinnedToCore(fastL, "LED", 8196, NULL, 2, NULL, 0);
   Serial.begin(115200);
   delay(1000);
   Serial.println("Setting up mic");
   setupMic();
   Serial.println("Mic setup completed");
-
   delay(1000);
 }
 
 void loop()
 {
-  // put your main code here, to run repeatedly:
-
   // Read multiple samples at once and calculate the sound pressure
-
   int num_bytes_read = i2s_read_bytes(I2S_PORT,
                                       (char *)samples,
                                       BLOCK_SIZE,     // the doc says bytes, but its elements.
@@ -137,9 +131,9 @@ void loop()
   }
 
   for (int i = 2; i < (BLOCK_SIZE / 2); i++)
-  { // Don't use sample 0 and only first SAMPLES/2 are usable. Each array eleement represents a frequency and its value the amplitude.
-    if (vReal[i] > 2000)
-    { // Add a crude noise filter, 10 x amplitude or more
+  {                      // Don't use sample 0 and only first SAMPLES/2 are usable. Each array eleement represents a frequency and its value the amplitude.
+    if (vReal[i] > 2000) // Add a crude noise filter, 10 x amplitude or more
+    {
       if (i <= 4)
         bands[0] = max(bands[0], (int)(vReal[i] / amplitude)); // 125Hz
       if (i > 6 && i <= 10)
@@ -152,21 +146,31 @@ void loop()
         bands[4] = max(bands[4], (int)(vReal[i] / amplitude)); // 2000Hz
       if (i > 60 && i <= 106)
         bands[5] = max(bands[5], (int)(vReal[i] / amplitude)); // 4000Hz
-      if (i > 106 && i <= 400)
+      if (i > 106 && i <= 300)
         bands[6] = max(bands[6], (int)(vReal[i] / amplitude)); // 8000Hz
-      if (i > 400)
+      if (i > 300)
         bands[7] = max(bands[7], (int)(vReal[i] / amplitude)); // 16000Hz
     }
-
-    // for (byte band = 0; band <= 6; band++) display.drawHorizontalLine(18*band,64-peak[band],14);
   }
-  leds[0] = CRGB(uint8_t(fnt(bands[0], k1)), uint8_t(fnt(bands[0], k1)), uint8_t(fnt(bands[0], k1))); // W
-  leds[1] = CRGB(uint8_t(fnt(bands[1], k1)), 0, uint8_t(fnt(bands[1], k1) / 2));                      // R+b
-  leds[2] = CRGB(uint8_t(fnt(bands[2], k1)), 0, 0);                                                   // R
-  leds[3] = CRGB(uint8_t(fnt(bands[3], k1)), uint8_t(fnt(bands[1], k1) / 2), 0);                      // R+g
-  leds[4] = CRGB(0, uint8_t(fnt(bands[3], k1)), 0);                                                   // G
-  leds[5] = CRGB(0, uint8_t(fnt(bands[3], k1) / 2), uint8_t(fnt(bands[5], k1)));                      // B+G
-  leds[6] = CRGB(0, 0, uint8_t(fnt(bands[6], k1)));                                                   // B
-  leds[7] = CRGB(uint8_t(fnt(bands[7], k1 + 1) / 2), 0, uint8_t(fnt(bands[7], k1 + 1)));              // B+r
-  FastLED.show();
+  xSemaphoreGive(ledSem);
+}
+
+void fastL(void *params)
+{
+  FastLED.addLeds<WS2812B, DATA_PIN, RGB>(leds, NUM_LEDS);
+  for (;;)
+  {
+    xSemaphoreTake(ledSem, portMAX_DELAY);
+    leds[0] = CRGB(uint8_t(fnt(bands[0], k1) / 2), uint8_t(fnt(bands[0], k1) / 2), uint8_t(fnt(bands[0], k1) / 2)); // W
+    leds[1] = CRGB(uint8_t(fnt(bands[1], k1)), 0, uint8_t(fnt(bands[1], k1) / 2));                                  // R+b
+    leds[2] = CRGB(uint8_t(fnt(bands[2], k1)), 0, 0);                                                               // R
+    leds[3] = CRGB(uint8_t(fnt(bands[3], k1)), uint8_t(fnt(bands[1], k1)), 0);                                  // R+g
+    leds[4] = CRGB(0, uint8_t(fnt(bands[4], k1)), 0);                                                               // G
+    leds[5] = CRGB(0, uint8_t(fnt(bands[5], k1)), uint8_t(fnt(bands[5], k1)));                                  // B+G
+    leds[6] = CRGB(0, 0, uint8_t(fnt(bands[6], k1)));
+    // leds[7] = CRGB(uint8_t(fnt(bands[6]+bands[7], k1+1)/3), 0, uint8_t(fnt(bands[6]+bands[7], k1)));                                                    // B
+    leds[7] = CRGB(uint8_t(fnt(bands[7], k1)), 0, uint8_t(fnt(bands[7], k1))); // B+r
+    // leds[7] = CRGB(uint8_t(fnt(bands[0], k1)), uint8_t(fnt(bands[0], k1)), uint8_t(fnt(bands[0], k1))); //W
+    FastLED.show();
+  }
 }
