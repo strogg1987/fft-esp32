@@ -1,2 +1,2 @@
 # fft-esp32
-Цветомузыка из листьев и веточек на ESP32, I2S Mic(INMP441), WS2812b
+Simple color-music box using esp32, i2s microphone and ws2812b LEDs
